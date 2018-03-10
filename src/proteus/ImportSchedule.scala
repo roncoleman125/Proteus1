@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) Ron Coleman
+ * See CONTRIBUTORS.TXT for a full list of copyright holders.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the Scaly Project nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE DEVELOPERS ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 package proteus
 
 import java.util.Date
@@ -9,7 +35,6 @@ import proteus.casa.MongoConnection
 import proteus.casa.MongoDbObject
 import proteus.casa.MongoHelper
 import proteus.util.{DbSlot, DbUser, SlotUniverse, UserUniverse}
-
 import scala.util.Random
 
 /**
@@ -44,7 +69,7 @@ object ImportSchedule {
     // Try to match the days / time with the database
     //    val _records = List("C,11497,CMPT,120L,111,AAA,4,INTRO TO PROGRAMMING,TF;R,12:30 pm-01:45 pm;09:30 am-10:45 am,25,30,-5,0,0,0,Cathy E Martensen (P),01/16-05/11,HC 1021,,")
     //    val (identified, nonidentified) = analyzeSlots(_records)
-    val (identified, nonidentified) = analyzeSlots(records)
+    val (identified, nonidentified) = identifySlots(records)
 
     println("records = "+records.length)
     println("standard = "+identified.size)
@@ -133,13 +158,7 @@ object ImportSchedule {
 
     val fields = asArray(record)
 
-    val slotIds = ListBuffer[ObjectId]()
-
-    dbSlots.foreach { dbSlot =>
-      slotIds.append(dbSlot.objid)
-    }
-
-    val (lectureIds, labId) = getLectureLab(dbSlots)
+    val (lectureIds, labId) = decompose(dbSlots)
 
     // Needed (below) to convert slotIds to a Java array
     import scala.collection.JavaConverters._
@@ -153,8 +172,8 @@ object ImportSchedule {
       "catalogName" -> catalogName,
       "crn" -> fields(CRN),
       "credits" -> fields(CREDS).toInt,
-      "slots" -> lectureIds.asJava, //slotIds.asJava,
-      "lab" -> labId,//null,
+      "slots" -> asObjectIds(lectureIds).asJava, //slotIds.asJava,
+      "lab" -> labId.objid,//null,
       "comment" -> null,
       "owner" -> user.id,
       "updated" -> now,
@@ -164,11 +183,30 @@ object ImportSchedule {
     coursesCollection.insertOne(course)
   }
 
-  def getLectureLab(dbSlots: List[DbSlot]): Tuple2[List[DbSlot],DbSlot] = {
+  /**
+    * Gets the db slots as object ids to feed to mongo.
+    * @param dbSlots Database slots
+    * @return List of object ids
+    */
+  def asObjectIds(dbSlots: List[DbSlot]): List[ObjectId] = {
+    dbSlots.foldLeft(List[ObjectId]()) { (list, dbSlot) =>
+      list ++ List(dbSlot.objid)
+    }
+  }
+
+
+  /**
+    * Decomposes the list of db slots into lecture and lab.
+    * @param dbSlots Database slots
+    * @return 2-tuple of slots for the lecture and one slot for the lab.
+    */
+  def decompose(dbSlots: List[DbSlot]): Tuple2[List[DbSlot],DbSlot] = {
     dbSlots.length match {
+        // One slot must be a lecture only.
       case 1 =>
         (dbSlots, null)
 
+        // Two slots can be lecture only or lecture & lab
       case 2 =>
         // If the slot numbers are the same, assume slots are for lecture.
         // if the slot numbers are not the same, make one the lecture and the other the lab.
@@ -188,19 +226,21 @@ object ImportSchedule {
           else
             (dbSlots.drop(1), dbSlots(0))
         }
+        // Three slots can only be lecture & lab
       case 3 =>
-        // Assume two adjacent three will be same slot
-        // In this case there's no need to sort them since...the lecture
-        // slot will by definition be longer that the lab.
-        val num1 = dbSlots(0).getNumber
-        val num2 = dbSlots(1).getNumber
-        val num3 = dbSlots(2).getNumber
+        // Assume two adjacent of three will be same slot
+        val sorted = dbSlots.sortWith { (a, b) => a.getNumber < b.getNumber }
+
+        val num1 = sorted(0).getNumber
+        val num2 = sorted(1).getNumber
+        val num3 = sorted(2).getNumber
 
         val (lecture, lab) =
-          if(num1 == num2) (dbSlots.slice(0, 2), dbSlots(2))
-          else /* num2 == num3 */ (dbSlots.drop(1), dbSlots(0))
+          if(num1 == num2) (sorted.slice(0, 2), sorted(2))
+          else /* num2 == num3 */ (sorted.drop(1), sorted(0))
 
         (lecture, lab)
+        // 0 or >3 slots -- don't know what this could be
       case _ =>
         println("WARNING unexpected number of db slots = "+dbSlots.length+" putting all in lecture!")
         (dbSlots, null)
@@ -241,10 +281,14 @@ object ImportSchedule {
     insert(year, semester, user, dbSlots, record)
   }
 
-  /* Returns list(identified record, corresponding db slots) AND list(nonidentified record) */
-  def analyzeSlots(records: List[String]): (List[(String, List[DbSlot])], List[String]) = {
+  /**
+    * Analyzes the records to identify them as being in the slot universe.
+    * @param records
+    * @return 2-tuple of identified record slots and non-identified slots.
+    */
+  def identifySlots(records: List[String]): (List[(String, List[DbSlot])], List[String]) = {
     // Get the slots
-    val nonidentified = ListBuffer[String]()
+    val nonidentifieds = ListBuffer[String]()
 
     // Try to match up every record (String) with its slots (List[DbSlot]).
     val identifieds = records.foldLeft(ListBuffer[(String,List[DbSlot])]()) { (identified, record) =>
@@ -265,7 +309,7 @@ object ImportSchedule {
               matchedSlots.append(slot)
 
             case None =>
-              //              nonidentified.append(record)
+              // nonidentifieds.append(record) -- added below to nonidentifeds
               println("WARNING no slot match for days/times for course: "+record)
           }
         }
@@ -281,14 +325,14 @@ object ImportSchedule {
       if(matches.length != 0)
         identified.append((record, matches.toList))
       else
-        nonidentified.append(record)
+        nonidentifieds.append(record)
 
       identified
     }
 
     // Return the records whose slots we could identify and those records
     // whose slots we could not identify
-    (identifieds.toList, nonidentified.toList)
+    (identifieds.toList, nonidentifieds.toList)
   }
 
   /** Return records from the spreadsheet */
@@ -300,7 +344,7 @@ object ImportSchedule {
     val merged = merge(rawLines)
 
     // Get only CMPT, MSCS, MSIS, and DATA rows
-    val records = rawLines.filter { line =>
+    val records = merged.filter { line =>
       val fields = line.split(",")
 
       fields.length match {
@@ -367,6 +411,7 @@ object ImportSchedule {
   /** Makes the record string into an array of fields */
   def asArray(record: String) = record.split(",").map(_.trim)
 
+  /** Tests if the field is complete, ie, it has some data--assumes field has been trimmed. */
   def isComplete(field: String) = field.length != 0
 
   /** Returns true if the number of identified slots equals the number days in grid */
@@ -375,15 +420,18 @@ object ImportSchedule {
       false
 
     // Get the number part of the slotNo
-    val slotNumber = dbSlots(0).slotNo.filter { c => c.isDigit }
+    val slotNumber = dbSlots(0).getNumber //dbSlots(0).slotNo.filter { c => c.isDigit }
 
     // Look for this number in the slot universe
     SlotUniverse.slots.find(slot => slot.number == slotNumber) match {
+        // If the number slots in the db slots is at least as many as the number
+        // of slots in the slot universe, then we're efficient.
       case Some(slot) =>
-        if(slot.days.length == dbSlots.length)
+        if(slot.days.length <= dbSlots.length)
           true
         else
           false
+        // If we get here, the slot isn't even found!
       case None =>
         false
     }

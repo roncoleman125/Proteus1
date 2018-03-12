@@ -173,7 +173,7 @@ object ImportSchedule {
       "crn" -> fields(CRN),
       "credits" -> fields(CREDS).toInt,
       "slots" -> asObjectIds(lectureIds).asJava, //slotIds.asJava,
-      "lab" -> labId.objid,//null,
+      "lab" -> asObjectId(labId),//null,
       "comment" -> null,
       "owner" -> user.id,
       "updated" -> now,
@@ -194,6 +194,12 @@ object ImportSchedule {
     }
   }
 
+  /**
+    * Gets the object id or null to feed to mongo.
+    * @param dbSlot Database slot
+    * @return Object id or null
+    */
+  def asObjectId(dbSlot: DbSlot) = if(dbSlot == null) null else dbSlot.objid
 
   /**
     * Decomposes the list of db slots into lecture and lab.

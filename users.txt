@@ -18,4 +18,4 @@ bowu,Bowu Zhang
 juan,Juan F Arias
 roger,Roger A Norton
 brian,Brian Edward Gormanly
-marilyn, Marilyn Zeppetelli
+marilyn,Marilyn J Zeppetelli

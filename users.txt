@@ -12,7 +12,7 @@ eitel,Eitel J Lauria
 cathy,Cathy E Martensen
 anne,Anne B Matheus
 carolyn,Carolyn C Matheus
-pablo,Pablo Rivas-Perea
+pablo,Pablo Rivas
 don,Donald R Schwartz
 bowu,Bowu Zhang
 juan,Juan F Arias
